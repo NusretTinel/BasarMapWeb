@@ -16,6 +16,7 @@ import { Circle as CircleStyle, Fill, Stroke, Style, Text } from 'ol/style';
 import { getData as getLocations, addData, updateLocation, deleteLocation, getOptimizedPoints, addRange } from '../../Api/api';
 import { defaults as defaultControls } from 'ol/control';
 import Icon from 'ol/style/Icon';
+import { calculatePolygonArea } from '../../utils/calculatePolygonArea';
 
 const SimpleMap = React.forwardRef(
     (
@@ -42,22 +43,30 @@ const SimpleMap = React.forwardRef(
             'Tüm Projeler': '/icons/default.svg',
         };
 
-        const savePolygon = async (name) => {
+        const getPolygonArea = () => {
             if (!tempPolygonRef.current) {
-                console.error('Kaydedilecek polygon bulunamadı');
+                console.error('Alan hesaplanacak poligon bulunamadı');
+                return null;
+            }
+            return calculatePolygonArea(tempPolygonRef.current);
+        };
+
+        const savePolygon = async (name, type, area, minCoverCount) => {
+            if (!tempPolygonRef.current) {
+                console.error('Kaydedilecek poligon bulunamadı');
                 return false;
             }
 
             try {
                 const wkt = to4326WKT(tempPolygonRef.current);
-                console.log('Saving Polygon WKT:', wkt);
+                console.log('Saving Polygon WKT:', wkt, 'Area:', area, 'minCoverCount:', minCoverCount);
 
-                await addData({ name, wkt });
-                console.log('Polygon saved successfully');
+                await addData({ name, wkt, typeN: type, area });
+                console.log('Poligon başarıyla kaydedildi');
 
-                const optimizedPoints = await optimizePolygon(wkt);
+                const optimizedPoints = await optimizePolygon(wkt, minCoverCount, name);
                 if (optimizedPoints) {
-                    console.log('Optimized points received:', optimizedPoints);
+                    console.log('Optimize edilmiş noktalar alındı:', optimizedPoints);
                     onOptimizationComplete?.(optimizedPoints);
                 } else {
                     onOptimizationComplete?.(null);
@@ -65,15 +74,15 @@ const SimpleMap = React.forwardRef(
 
                 return wkt;
             } catch (e) {
-                console.error('Polygon save or optimization error:', e);
+                console.error('Poligon kaydetme veya optimizasyon hatası:', e);
                 onOptimizationComplete?.(null);
                 throw e;
             }
         };
 
-        const optimizePolygon = async (wkt, minCoverCount = 5) => {
+        const optimizePolygon = async (wkt, minCoverCount, polygonName) => {
             if (!wkt) {
-                console.error('Optimize edilecek polygon bulunamadı');
+                console.error('Optimize edilecek poligon bulunamadı');
                 return null;
             }
 
@@ -86,8 +95,9 @@ const SimpleMap = React.forwardRef(
                 const validPoints = response.data
                     .map((point, index) => ({
                         ...point,
-                        id: point.id || `temp-opt-${index}`, // Assign temp ID for frontend use
-                        name: point.name || `Optimized Bin-${index + 1}`, // Ensure unique names
+                        id: point.id || `temp-opt-${index}`,
+                        name: `${polygonName}-${index + 1}`,
+                        typeN: selectedFilter,
                     }))
                     .filter((point) => {
                         if (!point.wkt) {
@@ -97,7 +107,6 @@ const SimpleMap = React.forwardRef(
                         return true;
                     });
 
-                // Filter out duplicate coordinates
                 const uniquePoints = [];
                 const seenCoordinates = new Set();
                 validPoints.forEach((point) => {
@@ -122,16 +131,9 @@ const SimpleMap = React.forwardRef(
                     });
                     feature.set('name', point.name);
                     feature.set('id', point.id);
+                    feature.set('typeN', point.typeN);
                     vectorSource.current.addFeature(feature);
                 });
-
-                const extent = vectorSource.current.getExtent();
-                if (!isNaN(extent[0])) {
-                    mapInstance.current.getView().fit(extent, {
-                        padding: [50, 50, 50, 50],
-                        maxZoom: 15,
-                    });
-                }
 
                 return uniquePoints;
             } catch (e) {
@@ -140,14 +142,13 @@ const SimpleMap = React.forwardRef(
             }
         };
 
-        const savePointsRange = async (points) => {
+        const savePointsRange = async (points, type, polygonName) => {
             if (!points || points.length === 0) {
                 console.error('No points to save');
                 throw new Error('No points to save');
             }
 
             try {
-                // Validate and format points, omitting Id for new records
                 const data = points
                     .map((point, index) => {
                         const wktMatch = point.wkt?.match(/POINT\s*\(\s*([-]?\d*\.?\d+)\s+([-]?\d*\.?\d+)\s*\)/);
@@ -155,26 +156,25 @@ const SimpleMap = React.forwardRef(
                             console.warn(`Invalid WKT for point ${index}: ${point.wkt}`);
                             return null;
                         }
-                        // Normalize coordinates to 6 decimal places
                         const lon = Number(wktMatch[1]).toFixed(6);
                         const lat = Number(wktMatch[2]).toFixed(6);
                         return {
-                            Name: point.name || `Nokta-${index + 1}`,
-                            Wkt: `POINT(${lon} ${lat})`,
+                            name: `${polygonName}-${index + 1}`,
+                            wkt: `POINT(${lon} ${lat})`,
+                            typeN: type,
                         };
                     })
-                    .filter(Boolean); // Remove invalid points
+                    .filter(Boolean);
 
-                // Filter out duplicate coordinates
                 const uniquePoints = [];
                 const seenCoordinates = new Set();
                 data.forEach((point) => {
-                    const coordKey = point.Wkt;
+                    const coordKey = point.wkt;
                     if (!seenCoordinates.has(coordKey)) {
                         seenCoordinates.add(coordKey);
                         uniquePoints.push(point);
                     } else {
-                        console.warn(`Duplicate coordinates found for point: ${point.Name}, WKT: ${point.Wkt}`);
+                        console.warn(`Duplicate coordinates found for point: ${point.name}, WKT: ${point.wkt}`);
                     }
                 });
 
@@ -229,6 +229,7 @@ const SimpleMap = React.forwardRef(
             optimizePolygon,
             addRange: savePointsRange,
             enablePointEditing,
+            getPolygonArea,
         }));
 
         const isLikelyEPSG3857 = (wktString) => {
@@ -260,9 +261,12 @@ const SimpleMap = React.forwardRef(
         const styleFunction = useCallback(
             (feature) => {
                 const geomType = feature.getGeometry().getType();
-                const theme = selectedFilter;
-                const iconUrl = customIconUrls[theme] || customIconUrls['Tüm Projeler'];
+                const featureTypeN = feature.get('typeN') || 'Tüm Projeler';
+                if (selectedFilter !== 'Tüm Projeler' && featureTypeN !== selectedFilter) {
+                    return null; // Filtrelenmiş özellikleri gizle
+                }
 
+                const iconUrl = customIconUrls[featureTypeN] || customIconUrls['Tüm Projeler'];
                 const themeColors = {
                     'Atık Yönetimi': '#10b981',
                     'Bölge Planlama': '#f59e0b',
@@ -270,7 +274,7 @@ const SimpleMap = React.forwardRef(
                     'Otopark Planlama': '#8b5cf6',
                     'Tüm Projeler': '#888',
                 };
-                const color = themeColors[theme] || '#888';
+                const color = themeColors[featureTypeN] || '#888';
 
                 if (geomType === 'Point') {
                     return new Style({
@@ -319,6 +323,7 @@ const SimpleMap = React.forwardRef(
 
                 records.forEach((item) => {
                     if (!item.wkt) return;
+                    if (selectedFilter !== 'Tüm Projeler' && item.typeN !== selectedFilter) return;
                     const projection = isLikelyEPSG3857(item.wkt) ? 'EPSG:3857' : 'EPSG:4326';
                     const feature = wktFormatter.readFeature(item.wkt, {
                         dataProjection: projection,
@@ -328,6 +333,7 @@ const SimpleMap = React.forwardRef(
                     if (geomType === 'Point' || geomType === 'Polygon') {
                         feature.setId(item.id);
                         feature.set('name', item.name);
+                        feature.set('typeN', item.typeN || 'Tüm Projeler');
                         vectorSource.current.addFeature(feature);
                     }
                 });
@@ -362,6 +368,7 @@ const SimpleMap = React.forwardRef(
 
                 if (geomType === 'Polygon') {
                     tempPolygonRef.current = f;
+                    f.set('typeN', selectedFilter);
                     if (onDrawingModeChange) {
                         onDrawingModeChange(false);
                     }
@@ -373,7 +380,7 @@ const SimpleMap = React.forwardRef(
                         return;
                     }
                     try {
-                        await addData({ name, wkt });
+                        await addData({ name, wkt, typeN: selectedFilter });
                         await loadFeaturesFromAPI();
                         onDataUpdated?.();
                     } catch (e) {
@@ -434,10 +441,11 @@ const SimpleMap = React.forwardRef(
                             : geom.getClosestPoint(mapInstance.current.getView().getCenter());
 
                 popupContentRef.current.innerHTML = `
-                <strong>ID:</strong> ${ft.getId()}<br/>
-                <strong>İsim:</strong> ${ft.get('name')}<br/>
-                <button class="del">🗑️ Sil</button>
-            `;
+          <strong>ID:</strong> ${ft.getId()}<br/>
+          <strong>İsim:</strong> ${ft.get('name')}<br/>
+          <strong>Tür:</strong> ${ft.get('typeN') || 'Tüm Projeler'}<br/>
+          <button class="del">🗑️ Sil</button>
+        `;
 
                 popupContentRef.current.querySelector('.del').onclick = async () => {
                     if (!window.confirm('Silmek istediğinize emin misiniz?')) return;
@@ -469,7 +477,7 @@ const SimpleMap = React.forwardRef(
                 mapInstance.current.setTarget(undefined);
                 document.removeEventListener('keydown', keyHandler);
             };
-        }, []);
+        }, [selectedFilter]);
 
         useEffect(() => {
             if (drawingMode) {

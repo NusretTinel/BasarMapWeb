@@ -21,7 +21,7 @@ export default function SimulationLoadingCard({ optimizationStatus, optimizedPoi
                     clearInterval(typeInterval);
                     setTimeout(() => setPhase(2), 1000);
                 }
-            }, 80);
+            }, 70);
             return () => clearInterval(typeInterval);
         }
     }, [phase]);
@@ -51,10 +51,10 @@ export default function SimulationLoadingCard({ optimizationStatus, optimizedPoi
                     clearInterval(typeInterval);
                     setTimeout(() => {
                         setPhase(4);
-                        setTimeout(() => onComplete?.(optimizedPoints), 800);
-                    }, 800);
+                        setTimeout(() => onComplete?.(optimizedPoints), 1400);
+                    }, 700);
                 }
-            }, 80);
+            }, 55);
             return () => clearInterval(typeInterval);
         }
     }, [phase, optimizedPoints, onComplete]);
